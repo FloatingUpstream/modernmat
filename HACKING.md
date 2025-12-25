@@ -148,11 +148,5 @@ fix them respectively. Customization available using the `FORMAT_PATTERNS` and
 
 Runs all the examples created by the `add_example` command.
 
-#### `spell-check` and `spell-fix`
-
-These targets run the codespell tool on the codebase to check errors and to fix
-them respectively. Customization available using the `SPELL_COMMAND` cache
-variable.
-
 [1]: https://cmake.org/cmake/help/latest/manual/cmake-presets.7.html
 [2]: https://cmake.org/download/

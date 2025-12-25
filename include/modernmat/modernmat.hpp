@@ -15,261 +15,180 @@
 
 namespace modernmat
 {
-    //------------------------------ MatX facade ------------------------------
-    // Header-only wrapper around cv::Mat semantics with copy-on-write guarantees.
-    //------------------------------------------------------------------------
-    // Toggle at compile time: define MODERNMAT_USE_OPENCV_ALLOCATOR to 1 to use
-    // cv::fastMalloc / cv::fastFree for MatX storage.
-    //------------------------------------------------------------------------
+//------------------------------ MatX facade ------------------------------
+// Header-only wrapper around cv::Mat semantics with copy-on-write guarantees.
+//------------------------------------------------------------------------
+// Toggle at compile time: define MODERNMAT_USE_OPENCV_ALLOCATOR to 1 to use
+// cv::fastMalloc / cv::fastFree for MatX storage.
+//------------------------------------------------------------------------
 #ifndef MODERNMAT_USE_OPENCV_ALLOCATOR
 #    define MODERNMAT_USE_OPENCV_ALLOCATOR 0  // NOLINT(cppcoreguidelines-macro-usage)
 #endif
 
-    class matx
+class matx
+{
+  public:
+    using byte = unsigned char;
+
+    template<typename Fn>
+    friend auto resize_aware(matx& destination, Fn&& fn) -> bool;
+
+    matx() noexcept = default;
+
+    matx(int rows, int cols, int type)
+        : matx(cv::Size {cols, rows}, type)
     {
-    public:
-        using byte = unsigned char;
+    }
 
-        template <typename Fn>
-        friend auto resize_aware(matx& destination, Fn&& fn) -> bool;
+    explicit matx(cv::Size size, int type) { allocate(size, type); }
 
-        matx() noexcept = default;
-
-        matx(int rows, int cols, int type)
-            : matx(cv::Size{cols, rows}, type)
-        {
+    explicit matx(const cv::Mat& source)
+    {
+        if (source.empty()) {
+            return;
         }
 
-        explicit matx(cv::Size size, int type) { allocate(size, type); }
+        auto keeper = std::make_shared<cv::Mat>(source);
+        m_owner = std::shared_ptr<void>(keeper, keeper->data);
+        m_data = static_cast<byte*>(m_owner.get());
+        m_stride = static_cast<std::size_t>(source.step);
+        m_type = source.type();
+        m_rows = source.rows;
+        m_cols = source.cols;
+        m_contiguous_stride = static_cast<std::size_t>(m_cols) * element_size();
+        m_detach_on_write = true;
+    }
 
-        explicit matx(const cv::Mat& source)
-        {
-            if (source.empty())
-            {
-                return;
-            }
+    matx(const matx&) = default;
+    matx(matx&&) noexcept = default;
+    auto operator=(const matx&) -> matx& = default;
+    auto operator=(matx&&) noexcept -> matx& = default;
+    ~matx() = default;
 
-            auto keeper = std::make_shared<cv::Mat>(source);
-            m_owner = std::shared_ptr<void>(keeper, keeper->data);
-            m_data = static_cast<byte*>(m_owner.get());
-            m_stride = static_cast<std::size_t>(source.step);
-            m_type = source.type();
-            m_rows = source.rows;
-            m_cols = source.cols;
-            m_contiguous_stride = static_cast<std::size_t>(m_cols) * element_size();
-            m_detach_on_write = true;
+    [[nodiscard]] auto rows() const noexcept -> int { return m_rows; }
+
+    [[nodiscard]] auto cols() const noexcept -> int { return m_cols; }
+
+    [[nodiscard]] auto size() const noexcept -> cv::Size { return {m_cols, m_rows}; }
+
+    [[nodiscard]] auto type() const noexcept -> int { return m_type; }
+
+    [[nodiscard]] auto channels() const noexcept -> int { return CV_MAT_CN(m_type); }
+
+    [[nodiscard]] auto depth() const noexcept -> int { return CV_MAT_DEPTH(m_type); }
+
+    [[nodiscard]] auto empty() const noexcept -> bool
+    {
+        return m_rows == 0 || m_cols == 0 || m_data == nullptr;
+    }
+
+    [[nodiscard]] auto step() const noexcept -> std::size_t { return m_stride; }
+
+    [[nodiscard]] auto step1() const -> std::size_t
+    {
+        if (empty()) {
+            return 0;
         }
+        return m_stride / element_size1();
+    }
 
-        matx(const matx&) = default;
-        matx(matx&&) noexcept = default;
-        auto operator=(const matx&) -> matx& = default;
-        auto operator=(matx&&) noexcept -> matx& = default;
-        ~matx() = default;
-
-        [[nodiscard]] auto rows() const noexcept -> int { return m_rows; }
-
-        [[nodiscard]] auto cols() const noexcept -> int { return m_cols; }
-
-        [[nodiscard]] auto size() const noexcept -> cv::Size { return {m_cols, m_rows}; }
-
-        [[nodiscard]] auto type() const noexcept -> int { return m_type; }
-
-        [[nodiscard]] auto channels() const noexcept -> int { return CV_MAT_CN(m_type); }
-
-        [[nodiscard]] auto depth() const noexcept -> int { return CV_MAT_DEPTH(m_type); }
-
-        [[nodiscard]] auto empty() const noexcept -> bool
-        {
-            return m_rows == 0 || m_cols == 0 || m_data == nullptr;
+    [[nodiscard]] auto is_continuous() const noexcept -> bool
+    {
+        if (empty()) {
+            return true;
         }
-
-        [[nodiscard]] auto step() const noexcept -> std::size_t { return m_stride; }
-
-        [[nodiscard]] auto step1() const -> std::size_t
-        {
-            if (empty())
-            {
-                return 0;
-            }
-            return m_stride / element_size1();
+        if (m_rows == 1) {
+            return true;
         }
+        return m_stride == contiguous_stride();
+    }
 
-        [[nodiscard]] auto is_continuous() const noexcept -> bool
-        {
-            if (empty())
-            {
-                return true;
-            }
-            if (m_rows == 1)
-            {
-                return true;
-            }
-            return m_stride == contiguous_stride();
-        }
+    // Writable access must ensure unique ownership first.
+    [[nodiscard]] auto data() -> byte*
+    {
+        detach();
+        return m_data;
+    }
 
-        // Writable access must ensure unique ownership first.
-        [[nodiscard]] auto data() -> byte*
-        {
-            detach();
-            return m_data;
-        }
+    // Const access never detaches; treat the pointer as read-only.
+    [[nodiscard]] auto data() const noexcept -> const byte* { return m_data; }
 
-        // Const access never detaches; treat the pointer as read-only.
-        [[nodiscard]] auto data() const noexcept -> const byte* { return m_data; }
+    // NOLINTNEXTLINE(google-explicit-constructor,hicpp-explicit-conversions)
+    operator cv::Mat()
+    {
+        detach();
+        // Returned header will not track reallocations; pre-size or use a
+        // temporary cv::Mat and construct a matx after the call when APIs resize.
+        return {m_rows, m_cols, m_type, m_data, m_stride};
+    }
 
-        // NOLINTNEXTLINE(google-explicit-constructor,hicpp-explicit-conversions)
-        operator cv::Mat()
-        {
-            detach();
-            // Returned header will not track reallocations; pre-size or use a
-            // temporary cv::Mat and construct a matx after the call when APIs resize.
-            return {m_rows, m_cols, m_type, m_data, m_stride};
-        }
+    // Explicit read-only OpenCV view for const MatX instances.
+    [[nodiscard]] auto as_cv_const() const -> cv::Mat
+    {
+        return {m_rows, m_cols, m_type, const_cast<byte*>(m_data), m_stride};
+    }
 
-        // Explicit read-only OpenCV view for const MatX instances.
-        [[nodiscard]] auto as_cv_const() const -> cv::Mat
-        {
-            return {m_rows, m_cols, m_type, const_cast<byte*>(m_data), m_stride};
-        }
+    template<typename T>
+    [[nodiscard]] auto ptr(int row) -> T*
+    {
+        detach();
+        ensure_row(row);
+        auto const offset = static_cast<std::size_t>(row) * m_stride;
+        return reinterpret_cast<T*>(m_data + offset);  // NOLINT
+    }
 
-        template <typename T>
-        [[nodiscard]] auto ptr(int row) -> T*
-        {
-            detach();
-            ensure_row(row);
-            auto const offset = static_cast<std::size_t>(row) * m_stride;
-            return reinterpret_cast<T*>(m_data + offset); // NOLINT
-        }
+    template<typename T>
+    [[nodiscard]] auto ptr(int row) const -> const T*
+    {
+        ensure_row(row);
+        auto const offset = static_cast<std::size_t>(row) * m_stride;
+        return reinterpret_cast<const T*>(m_data + offset);  // NOLINT
+    }
 
-        template <typename T>
-        [[nodiscard]] auto ptr(int row) const -> const T*
-        {
-            ensure_row(row);
-            auto const offset = static_cast<std::size_t>(row) * m_stride;
-            return reinterpret_cast<const T*>(m_data + offset); // NOLINT
-        }
-
-        [[nodiscard]] auto clone() const -> matx
-        {
-            matx copy{};
-            if (empty())
-            {
-                return copy;
-            }
-
-            copy.allocate(cv::Size{m_cols, m_rows}, m_type);
-            auto source = cv::Mat(m_rows, m_cols, m_type, m_data, m_stride);
-            auto destination =
-                cv::Mat(copy.m_rows, copy.m_cols, copy.m_type, copy.m_data, copy.m_stride);
-            source.copyTo(destination);
-            copy.m_detach_on_write = false;
-
+    [[nodiscard]] auto clone() const -> matx
+    {
+        matx copy {};
+        if (empty()) {
             return copy;
         }
 
-        // slice() is an alias until a write occurs while the buffer is shared; then it detaches
-        [[nodiscard]] auto slice(const cv::Rect& region) const -> matx
-        {
-            validate_roi(region);
+        copy.allocate(cv::Size {m_cols, m_rows}, m_type);
+        auto source = cv::Mat(m_rows, m_cols, m_type, m_data, m_stride);
+        auto destination =
+            cv::Mat(copy.m_rows, copy.m_cols, copy.m_type, copy.m_data, copy.m_stride);
+        source.copyTo(destination);
+        copy.m_detach_on_write = false;
 
-            // CoW slice aliases storage and detaches on first write.
-            auto view = matx{};
-            view.m_owner = m_owner;
-            const auto header = cv::Mat(m_rows, m_cols, m_type, m_data, m_stride);
-            const auto roi_header = cv::Mat(header, region);
-            view.m_data = roi_header.data;
-            view.m_stride = roi_header.step;
-            view.m_rows = roi_header.rows;
-            view.m_cols = roi_header.cols;
-            view.m_type = roi_header.type();
-            view.m_contiguous_stride = static_cast<std::size_t>(roi_header.cols) * view.element_size();
-            // Slices always detach on first write to avoid mutating the parent.
-            view.m_detach_on_write = m_detach_on_write;
+        return copy;
+    }
 
-            return view;
-        }
+    // slice() is an alias until a write occurs while the buffer is shared; then it detaches
+    [[nodiscard]] auto slice(const cv::Rect& region) const -> matx
+    {
+        validate_roi(region);
 
-        [[nodiscard]] auto operator()(const cv::Rect& region) const -> matx { return slice(region); }
+        // CoW slice aliases storage and detaches on first write.
+        auto view = matx {};
+        view.m_owner = m_owner;
+        const auto header = cv::Mat(m_rows, m_cols, m_type, m_data, m_stride);
+        const auto roi_header = cv::Mat(header, region);
+        view.m_data = roi_header.data;
+        view.m_stride = roi_header.step;
+        view.m_rows = roi_header.rows;
+        view.m_cols = roi_header.cols;
+        view.m_type = roi_header.type();
+        view.m_contiguous_stride = static_cast<std::size_t>(roi_header.cols) * view.element_size();
+        // Slices always detach on first write to avoid mutating the parent.
+        view.m_detach_on_write = m_detach_on_write;
 
-        void prepare_same_shape_as(const matx& other)
-        {
-            if (other.empty())
-            {
-                m_owner.reset();
-                m_data = nullptr;
-                m_stride = 0;
-                m_rows = 0;
-                m_cols = 0;
-                m_type = 0;
-                m_contiguous_stride = 0;
-                return;
-            }
+        return view;
+    }
 
-            if (m_rows == other.m_rows && m_cols == other.m_cols && m_type == other.m_type)
-            {
-                return;
-            }
+    [[nodiscard]] auto operator()(const cv::Rect& region) const -> matx { return slice(region); }
 
-            allocate(cv::Size{other.m_cols, other.m_rows}, other.m_type);
-        }
-
-        void prepare(int rows, int cols, int type)
-        {
-            if (m_rows == rows && m_cols == cols && m_type == type && m_data != nullptr)
-            {
-                return;
-            }
-            allocate(cv::Size{cols, rows}, type);
-        }
-
-    private:
-        std::shared_ptr<void> m_owner;
-        byte* m_data = nullptr;
-        std::size_t m_stride = 0;
-        int m_rows = 0;
-        int m_cols = 0;
-        int m_type = 0;
-        std::size_t m_contiguous_stride = 0;
-        bool m_detach_on_write = false;
-
-        [[nodiscard]] auto contiguous_stride() const noexcept -> std::size_t
-        {
-            return m_contiguous_stride;
-        }
-
-        [[nodiscard]] auto element_size() const noexcept -> std::size_t
-        {
-            return static_cast<std::size_t>(CV_ELEM_SIZE(m_type));
-        }
-
-        [[nodiscard]] auto element_size1() const noexcept -> std::size_t
-        {
-            return static_cast<std::size_t>(CV_ELEM_SIZE1(m_type));
-        }
-
-        void ensure_row(int row) const
-        {
-            if (row < 0 || row >= m_rows)
-            {
-                throw std::out_of_range("Row index out of bounds");
-            }
-        }
-
-        void validate_roi(const cv::Rect& region) const
-        {
-            if (empty())
-            {
-                throw std::out_of_range("ROI requested on empty image");
-            }
-            if (region.x < 0 || region.y < 0 || region.width <= 0 || region.height <= 0
-                || region.x + region.width > m_cols || region.y + region.height > m_rows)
-            {
-                throw std::out_of_range("ROI out of bounds");
-            }
-        }
-
-        void allocate(cv::Size size, int type)
-        {
+    void prepare_same_shape_as(const matx& other)
+    {
+        if (other.empty()) {
             m_owner.reset();
             m_data = nullptr;
             m_stride = 0;
@@ -277,112 +196,173 @@ namespace modernmat
             m_cols = 0;
             m_type = 0;
             m_contiguous_stride = 0;
-            m_detach_on_write = false;
-
-            if (size.width <= 0 || size.height <= 0)
-            {
-                throw std::invalid_argument("rows and cols must be positive");
-            }
-            if (type < 0)
-            {
-                throw std::invalid_argument("type must be a valid OpenCV type");
-            }
-
-            m_type = type;
-            m_rows = size.height;
-            m_cols = size.width;
-            m_contiguous_stride = static_cast<std::size_t>(m_cols) * element_size();
-            m_stride = m_contiguous_stride;
-            auto const total_bytes = m_contiguous_stride * static_cast<std::size_t>(m_rows);
-
-            // NOLINTBEGIN
-            if constexpr (MODERNMAT_USE_OPENCV_ALLOCATOR != 0)
-            {
-                auto* storage = cv::fastMalloc(total_bytes);
-                if (storage == nullptr)
-                {
-                    throw std::bad_alloc();
-                }
-                m_owner = std::shared_ptr<void>(
-                    storage, [](void* pointer) noexcept -> void { cv::fastFree(pointer); });
-            }
-            else
-            {
-                auto deleter = [](void* pointer) noexcept -> void { ::operator delete(pointer); };
-                m_owner = std::shared_ptr<void>(::operator new(total_bytes), deleter);
-            }
-            // NOLINTEND
-            m_data = static_cast<byte*>(m_owner.get());
-            m_detach_on_write = false;
+            return;
         }
 
-        //----------------------------------------
-        // CoW detach helper
-        //----------------------------------------
-        void detach()
-        {
-            if (!m_owner)
-            {
-                return;
-            }
-
-            auto const requires_unique = m_detach_on_write || m_owner.use_count() > 1;
-            if (!requires_unique)
-            {
-                return;
-            }
-
-            auto unique_copy = clone();
-            unique_copy.m_detach_on_write = false;
-            *this = std::move(unique_copy);
+        if (m_rows == other.m_rows && m_cols == other.m_cols && m_type == other.m_type) {
+            return;
         }
-    };
 
-    // Resize-aware helper for OpenCV APIs that may reallocate destination headers.
-    // Returns true when the destination buffer changes and the matx is updated.
-    template <typename Fn>
-    auto resize_aware(matx& destination, Fn&& fn) -> bool
+        allocate(cv::Size {other.m_cols, other.m_rows}, other.m_type);
+    }
+
+    void prepare(int rows, int cols, int type)
     {
-        // Build the header first so any CoW detach happens before we snapshot metadata.
-        cv::Mat header = destination;
-        auto const* before_data = header.data;
-        auto const before_rows = header.rows;
-        auto const before_cols = header.cols;
-        auto const before_type = header.type();
-        auto const before_step = static_cast<std::size_t>(header.step);
+        if (m_rows == rows && m_cols == cols && m_type == type && m_data != nullptr) {
+            return;
+        }
+        allocate(cv::Size {cols, rows}, type);
+    }
 
-        std::forward<Fn>(fn)(header);
+  private:
+    std::shared_ptr<void> m_owner;
+    byte* m_data = nullptr;
+    std::size_t m_stride = 0;
+    int m_rows = 0;
+    int m_cols = 0;
+    int m_type = 0;
+    std::size_t m_contiguous_stride = 0;
+    bool m_detach_on_write = false;
 
-        auto const data_changed = header.data != before_data;
-        auto const meta_changed = header.rows != before_rows || header.cols != before_cols
-            || header.type() != before_type || static_cast<std::size_t>(header.step) != before_step;
+    [[nodiscard]] auto contiguous_stride() const noexcept -> std::size_t
+    {
+        return m_contiguous_stride;
+    }
 
-        if (!data_changed && !meta_changed)
+    [[nodiscard]] auto element_size() const noexcept -> std::size_t
+    {
+        return static_cast<std::size_t>(CV_ELEM_SIZE(m_type));
+    }
+
+    [[nodiscard]] auto element_size1() const noexcept -> std::size_t
+    {
+        return static_cast<std::size_t>(CV_ELEM_SIZE1(m_type));
+    }
+
+    void ensure_row(int row) const
+    {
+        if (row < 0 || row >= m_rows) {
+            throw std::out_of_range("Row index out of bounds");
+        }
+    }
+
+    void validate_roi(const cv::Rect& region) const
+    {
+        if (empty()) {
+            throw std::out_of_range("ROI requested on empty image");
+        }
+        if (region.x < 0 || region.y < 0 || region.width <= 0 || region.height <= 0
+            || region.x + region.width > m_cols || region.y + region.height > m_rows)
         {
-            return false;
+            throw std::out_of_range("ROI out of bounds");
+        }
+    }
+
+    void allocate(cv::Size size, int type)
+    {
+        m_owner.reset();
+        m_data = nullptr;
+        m_stride = 0;
+        m_rows = 0;
+        m_cols = 0;
+        m_type = 0;
+        m_contiguous_stride = 0;
+        m_detach_on_write = false;
+
+        if (size.width <= 0 || size.height <= 0) {
+            throw std::invalid_argument("rows and cols must be positive");
+        }
+        if (type < 0) {
+            throw std::invalid_argument("type must be a valid OpenCV type");
         }
 
-        if (data_changed)
-        {
-            destination = matx{header};
-            return true;
+        m_type = type;
+        m_rows = size.height;
+        m_cols = size.width;
+        m_contiguous_stride = static_cast<std::size_t>(m_cols) * element_size();
+        m_stride = m_contiguous_stride;
+        auto const total_bytes = m_contiguous_stride * static_cast<std::size_t>(m_rows);
+
+        // NOLINTBEGIN
+        if constexpr (MODERNMAT_USE_OPENCV_ALLOCATOR != 0) {
+            auto* storage = cv::fastMalloc(total_bytes);
+            if (storage == nullptr) {
+                throw std::bad_alloc();
+            }
+            m_owner = std::shared_ptr<void>(
+                storage, [](void* pointer) noexcept -> void { cv::fastFree(pointer); });
+        } else {
+            auto deleter = [](void* pointer) noexcept -> void { ::operator delete(pointer); };
+            m_owner = std::shared_ptr<void>(::operator new(total_bytes), deleter);
+        }
+        // NOLINTEND
+        m_data = static_cast<byte*>(m_owner.get());
+        m_detach_on_write = false;
+    }
+
+    //----------------------------------------
+    // CoW detach helper
+    //----------------------------------------
+    void detach()
+    {
+        if (!m_owner) {
+            return;
         }
 
-        // Preserve ownership when only header metadata changes.
-        destination.m_rows = header.rows;
-        destination.m_cols = header.cols;
-        destination.m_type = header.type();
-        destination.m_stride = static_cast<std::size_t>(header.step);
-        destination.m_contiguous_stride =
-            static_cast<std::size_t>(destination.m_cols) * destination.element_size();
+        auto const requires_unique = m_detach_on_write || m_owner.use_count() > 1;
+        if (!requires_unique) {
+            return;
+        }
 
+        auto unique_copy = clone();
+        unique_copy.m_detach_on_write = false;
+        *this = std::move(unique_copy);
+    }
+};
+
+// Resize-aware helper for OpenCV APIs that may reallocate destination headers.
+// Returns true when the destination buffer changes and the matx is updated.
+template<typename Fn>
+auto resize_aware(matx& destination, Fn&& fn) -> bool
+{
+    // Build the header first so any CoW detach happens before we snapshot metadata.
+    cv::Mat header = destination;
+    auto const* before_data = header.data;
+    auto const before_rows = header.rows;
+    auto const before_cols = header.cols;
+    auto const before_type = header.type();
+    auto const before_step = static_cast<std::size_t>(header.step);
+
+    std::forward<Fn>(fn)(header);
+
+    auto const data_changed = header.data != before_data;
+    auto const meta_changed = header.rows != before_rows || header.cols != before_cols
+        || header.type() != before_type || static_cast<std::size_t>(header.step) != before_step;
+
+    if (!data_changed && !meta_changed) {
+        return false;
+    }
+
+    if (data_changed) {
+        destination = matx {header};
         return true;
     }
 
-    inline auto name() -> std::string
-    {
-        return "modernmat";
-    }
-} // namespace modernmat
+    // Preserve ownership when only header metadata changes.
+    destination.m_rows = header.rows;
+    destination.m_cols = header.cols;
+    destination.m_type = header.type();
+    destination.m_stride = static_cast<std::size_t>(header.step);
+    destination.m_contiguous_stride =
+        static_cast<std::size_t>(destination.m_cols) * destination.element_size();
+
+    return true;
+}
+
+inline auto name() -> std::string
+{
+    return "modernmat";
+}
+}  // namespace modernmat
 
 #endif  // MODERNMAT_MODERNMAT_HPP

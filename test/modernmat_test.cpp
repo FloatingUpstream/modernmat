@@ -103,7 +103,7 @@ TEST(MatX, SliceDoesNotDetachWhenParentReleasedBeforeWrite)
     slice.ptr<std::uint8_t>(0)[0] = 2;
 
     auto const* after = static_cast<const modernmat::matx&>(slice).data();
-    EXPECT_EQ(before, after);    // key expectation under this model
+    EXPECT_EQ(before, after);  // key expectation under this model
 }
 
 TEST(MatX, SliceWriteDoesNotAffectParentWhenBothAlive)
