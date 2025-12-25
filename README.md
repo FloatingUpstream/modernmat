@@ -29,9 +29,10 @@ This is the modernmat project.
 
 See the [BUILDING](BUILDING.md) document.
 
-# Contributing
+# Release policy
 
-See the [CONTRIBUTING](CONTRIBUTING.md) document.
+This project does not publish formal releases. Consumers should pin to a
+specific commit (or vendored snapshot) for reproducible builds.
 
 # Licensing
 
