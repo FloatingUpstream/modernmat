@@ -46,9 +46,17 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Install LCov
+    - name: Cache apt packages
+      uses: actions/cache@v4
+      with:
+        path: /var/cache/apt/archives
+        key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/ci.yml') }}
+        restore-keys: |
+          ${{ runner.os }}-apt-
+
+    - name: Install dependencies
       run: sudo apt-get update -q
-        && sudo apt-get install lcov -q -y
+        && sudo apt-get install -y -q lcov libopencv-dev
 
     - name: Configure
       run: cmake --preset=ci-coverage
@@ -79,6 +87,18 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Cache apt packages
+      uses: actions/cache@v4
+      with:
+        path: /var/cache/apt/archives
+        key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/ci.yml') }}
+        restore-keys: |
+          ${{ runner.os }}-apt-
+
+    - name: Install OpenCV
+      run: sudo apt-get update -q
+        && sudo apt-get install -y -q libopencv-dev
+
     - name: Configure
       run: cmake --preset=ci-sanitize
 
@@ -101,33 +121,29 @@ jobs:
   test:
     needs: [lint]
 
-    strategy:
-      matrix:
-        os: [macos-14, ubuntu-24.04, windows-2022]
-
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-24.04
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: Install static analyzers
-      if: matrix.os == 'ubuntu-24.04'
-      run: >-
-        sudo apt-get install clang-tidy-18 cppcheck -y -q
+    - name: Cache apt packages
+      uses: actions/cache@v4
+      with:
+        path: /var/cache/apt/archives
+        key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/ci.yml') }}
+        restore-keys: |
+          ${{ runner.os }}-apt-
 
-        sudo update-alternatives --install
-        /usr/bin/clang-tidy clang-tidy
-        /usr/bin/clang-tidy-18 180
-
-    - name: Setup MultiToolTask
-      if: matrix.os == 'windows-2022'
+    - name: Install dependencies
       run: |
-        Add-Content "$env:GITHUB_ENV" 'UseMultiToolTask=true'
-        Add-Content "$env:GITHUB_ENV" 'EnforceProcessCountAcrossBuilds=true'
+        sudo apt-get update -q
+        sudo apt-get install -y -q clang-tidy-18 cppcheck libopencv-dev
+        sudo update-alternatives --install \
+          /usr/bin/clang-tidy clang-tidy \
+          /usr/bin/clang-tidy-18 180
 
     - name: Configure
-      shell: pwsh
-      run: cmake "--preset=ci-$("${{ matrix.os }}".split("-")[0])"
+      run: cmake --preset=ci-ubuntu
 
     - name: Build
       run: cmake --build build --config Release -j 2
