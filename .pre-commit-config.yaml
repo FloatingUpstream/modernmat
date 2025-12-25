@@ -1,0 +1,7 @@
+repos:
+  - repo: https://github.com/cpp-linter/cpp-linter-hooks
+    rev: v1.1.7
+    hooks:
+      - id: clang-format
+        args: [ --style=file ]
+        files: \.(c|cc|cpp|cxx|h|hh|hpp|hxx|ixx)$

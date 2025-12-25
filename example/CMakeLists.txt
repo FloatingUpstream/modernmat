@@ -1,0 +1,11 @@
+add_executable(basic_usage basic_usage.cpp)
+target_link_libraries(basic_usage PRIVATE modernmat::modernmat)
+target_compile_features(basic_usage PRIVATE cxx_std_20)
+
+add_executable(reallocation reallocation.cpp)
+target_link_libraries(reallocation PRIVATE modernmat::modernmat)
+target_compile_features(reallocation PRIVATE cxx_std_20)
+
+add_executable(cow_const_correctness cow_const_correctness.cpp)
+target_link_libraries(cow_const_correctness PRIVATE modernmat::modernmat)
+target_compile_features(cow_const_correctness PRIVATE cxx_std_20)
