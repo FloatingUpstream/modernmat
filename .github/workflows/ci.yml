@@ -27,7 +27,6 @@ jobs:
           | sudo tee /etc/apt/sources.list.d/llvm.list
         sudo apt-get update -q
         sudo apt-get install -y -q clang-format-21
-        clang-format-21 --version | grep -F "version 21.1.6"
 
     - name: Lint
       run: cmake -D FORMAT_COMMAND=clang-format-21 -P cmake/lint.cmake
