@@ -2,6 +2,7 @@
 #define MODERNMAT_MODERNMAT_HPP
 
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <new>
 #include <stdexcept>
@@ -48,14 +49,21 @@ class matx
             return;
         }
 
-        auto keeper = std::make_shared<cv::Mat>(source);
-        m_owner = std::shared_ptr<void>(keeper, keeper->data);
+        if (source.u == nullptr) {
+            auto copy = source.clone();
+            auto keeper = std::make_shared<cv::Mat>(std::move(copy));
+            m_owner = std::shared_ptr<void>(keeper, keeper->data);
+        } else {
+            auto keeper = std::make_shared<cv::Mat>(source);
+            m_owner = std::shared_ptr<void>(keeper, keeper->data);
+        }
+
         m_data = static_cast<byte*>(m_owner.get());
         m_stride = static_cast<std::size_t>(source.step);
         m_type = source.type();
         m_rows = source.rows;
         m_cols = source.cols;
-        m_contiguous_stride = static_cast<std::size_t>(m_cols) * element_size();
+        m_contiguous_stride = checked_row_stride(m_cols, element_size());
         m_detach_on_write = true;
     }
 
@@ -122,11 +130,15 @@ class matx
         return {m_rows, m_cols, m_type, m_data, m_stride};
     }
 
-    // Explicit read-only OpenCV view for const MatX instances.
+    // Contract-only read view for const MatX instances. cv::Mat cannot encode
+    // immutable data, so callers must not mutate the returned header.
     [[nodiscard]] auto as_cv_const() const -> cv::Mat
     {
         return {m_rows, m_cols, m_type, const_cast<byte*>(m_data), m_stride};
     }
+
+    // Const-safe OpenCV value for APIs that may mutate their input header/data.
+    [[nodiscard]] auto to_cv_mat_copy() const -> cv::Mat { return as_cv_const().clone(); }
 
     template<typename T>
     [[nodiscard]] auto ptr(int row) -> T*
@@ -224,6 +236,24 @@ class matx
     std::size_t m_contiguous_stride = 0;
     bool m_detach_on_write = false;
 
+    [[nodiscard]] static auto checked_row_stride(int cols, std::size_t element_bytes) -> std::size_t
+    {
+        auto const width = static_cast<std::size_t>(cols);
+        if (element_bytes != 0 && width > std::numeric_limits<std::size_t>::max() / element_bytes) {
+            throw std::overflow_error("row byte count overflows size_t");
+        }
+        return width * element_bytes;
+    }
+
+    [[nodiscard]] static auto checked_total_bytes(std::size_t stride, int rows) -> std::size_t
+    {
+        auto const height = static_cast<std::size_t>(rows);
+        if (stride != 0 && height > std::numeric_limits<std::size_t>::max() / stride) {
+            throw std::overflow_error("image byte count overflows size_t");
+        }
+        return stride * height;
+    }
+
     [[nodiscard]] auto contiguous_stride() const noexcept -> std::size_t
     {
         return m_contiguous_stride;
@@ -252,7 +282,7 @@ class matx
             throw std::out_of_range("ROI requested on empty image");
         }
         if (region.x < 0 || region.y < 0 || region.width <= 0 || region.height <= 0
-            || region.x + region.width > m_cols || region.y + region.height > m_rows)
+            || region.width > m_cols - region.x || region.height > m_rows - region.y)
         {
             throw std::out_of_range("ROI out of bounds");
         }
@@ -279,9 +309,9 @@ class matx
         m_type = type;
         m_rows = size.height;
         m_cols = size.width;
-        m_contiguous_stride = static_cast<std::size_t>(m_cols) * element_size();
+        m_contiguous_stride = checked_row_stride(m_cols, element_size());
         m_stride = m_contiguous_stride;
-        auto const total_bytes = m_contiguous_stride * static_cast<std::size_t>(m_rows);
+        auto const total_bytes = checked_total_bytes(m_contiguous_stride, m_rows);
 
         // NOLINTBEGIN
         if constexpr (MODERNMAT_USE_OPENCV_ALLOCATOR != 0) {
@@ -328,6 +358,8 @@ auto resize_aware(matx& destination, Fn&& fn) -> bool
     // Build the header first so any CoW detach happens before we snapshot metadata.
     cv::Mat header = destination;
     auto const* before_data = header.data;
+    auto const* before_start = header.datastart;
+    auto const* before_end = header.dataend;
     auto const before_rows = header.rows;
     auto const before_cols = header.cols;
     auto const before_type = header.type();
@@ -343,12 +375,17 @@ auto resize_aware(matx& destination, Fn&& fn) -> bool
         return false;
     }
 
-    if (data_changed) {
+    auto const aliases_original =
+        before_start != nullptr && header.data >= before_start && header.data < before_end;
+
+    if (data_changed && !aliases_original) {
         destination = matx {header};
         return true;
     }
 
-    // Preserve ownership when only header metadata changes.
+    // Preserve ownership when the header only changes metadata, or when it is
+    // rebound to a sub-view of the original destination storage.
+    destination.m_data = header.data;
     destination.m_rows = header.rows;
     destination.m_cols = header.cols;
     destination.m_type = header.type();

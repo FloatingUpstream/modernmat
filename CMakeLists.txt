@@ -5,8 +5,8 @@ include(cmake/prelude.cmake)
 project(
     modernmat
     VERSION 0.1.0
-    DESCRIPTION "Short description"
-    HOMEPAGE_URL "https://example.com/"
+    DESCRIPTION "Header-only copy-on-write facade for OpenCV cv::Mat"
+    HOMEPAGE_URL "https://github.com/modernmat/modernmat"
     LANGUAGES CXX
 )
 
