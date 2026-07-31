@@ -130,11 +130,15 @@ class matx
         return {m_rows, m_cols, m_type, m_data, m_stride};
     }
 
-    // Explicit read-only OpenCV view for const MatX instances.
+    // Contract-only read view for const MatX instances. cv::Mat cannot encode
+    // immutable data, so callers must not mutate the returned header.
     [[nodiscard]] auto as_cv_const() const -> cv::Mat
     {
         return {m_rows, m_cols, m_type, const_cast<byte*>(m_data), m_stride};
     }
+
+    // Const-safe OpenCV value for APIs that may mutate their input header/data.
+    [[nodiscard]] auto to_cv_mat_copy() const -> cv::Mat { return as_cv_const().clone(); }
 
     template<typename T>
     [[nodiscard]] auto ptr(int row) -> T*
