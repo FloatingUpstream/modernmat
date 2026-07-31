@@ -2,6 +2,7 @@
 #define MODERNMAT_MODERNMAT_HPP
 
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <new>
 #include <stdexcept>
@@ -62,7 +63,7 @@ class matx
         m_type = source.type();
         m_rows = source.rows;
         m_cols = source.cols;
-        m_contiguous_stride = static_cast<std::size_t>(m_cols) * element_size();
+        m_contiguous_stride = checked_row_stride(m_cols, element_size());
         m_detach_on_write = true;
     }
 
@@ -231,6 +232,24 @@ class matx
     std::size_t m_contiguous_stride = 0;
     bool m_detach_on_write = false;
 
+    [[nodiscard]] static auto checked_row_stride(int cols, std::size_t element_bytes) -> std::size_t
+    {
+        auto const width = static_cast<std::size_t>(cols);
+        if (element_bytes != 0 && width > std::numeric_limits<std::size_t>::max() / element_bytes) {
+            throw std::overflow_error("row byte count overflows size_t");
+        }
+        return width * element_bytes;
+    }
+
+    [[nodiscard]] static auto checked_total_bytes(std::size_t stride, int rows) -> std::size_t
+    {
+        auto const height = static_cast<std::size_t>(rows);
+        if (stride != 0 && height > std::numeric_limits<std::size_t>::max() / stride) {
+            throw std::overflow_error("image byte count overflows size_t");
+        }
+        return stride * height;
+    }
+
     [[nodiscard]] auto contiguous_stride() const noexcept -> std::size_t
     {
         return m_contiguous_stride;
@@ -286,9 +305,9 @@ class matx
         m_type = type;
         m_rows = size.height;
         m_cols = size.width;
-        m_contiguous_stride = static_cast<std::size_t>(m_cols) * element_size();
+        m_contiguous_stride = checked_row_stride(m_cols, element_size());
         m_stride = m_contiguous_stride;
-        auto const total_bytes = m_contiguous_stride * static_cast<std::size_t>(m_rows);
+        auto const total_bytes = checked_total_bytes(m_contiguous_stride, m_rows);
 
         // NOLINTBEGIN
         if constexpr (MODERNMAT_USE_OPENCV_ALLOCATOR != 0) {
