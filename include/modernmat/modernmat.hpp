@@ -335,6 +335,8 @@ auto resize_aware(matx& destination, Fn&& fn) -> bool
     // Build the header first so any CoW detach happens before we snapshot metadata.
     cv::Mat header = destination;
     auto const* before_data = header.data;
+    auto const* before_start = header.datastart;
+    auto const* before_end = header.dataend;
     auto const before_rows = header.rows;
     auto const before_cols = header.cols;
     auto const before_type = header.type();
@@ -350,12 +352,17 @@ auto resize_aware(matx& destination, Fn&& fn) -> bool
         return false;
     }
 
-    if (data_changed) {
+    auto const aliases_original =
+        before_start != nullptr && header.data >= before_start && header.data < before_end;
+
+    if (data_changed && !aliases_original) {
         destination = matx {header};
         return true;
     }
 
-    // Preserve ownership when only header metadata changes.
+    // Preserve ownership when the header only changes metadata, or when it is
+    // rebound to a sub-view of the original destination storage.
+    destination.m_data = header.data;
     destination.m_rows = header.rows;
     destination.m_cols = header.cols;
     destination.m_type = header.type();
