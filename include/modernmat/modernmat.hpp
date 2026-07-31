@@ -259,7 +259,7 @@ class matx
             throw std::out_of_range("ROI requested on empty image");
         }
         if (region.x < 0 || region.y < 0 || region.width <= 0 || region.height <= 0
-            || region.x + region.width > m_cols || region.y + region.height > m_rows)
+            || region.width > m_cols - region.x || region.height > m_rows - region.y)
         {
             throw std::out_of_range("ROI out of bounds");
         }
