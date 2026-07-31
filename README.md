@@ -1,6 +1,8 @@
 # modernmat
 
-This is the modernmat project.
+modernmat is a small header-only C++20 facade over OpenCV `cv::Mat`.
+It provides value-like `matx` objects with explicit copy-on-write behaviour,
+ROI views, and helper APIs for safer OpenCV interop.
 
 # Development prerequisites
 
