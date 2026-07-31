@@ -48,8 +48,15 @@ class matx
             return;
         }
 
-        auto keeper = std::make_shared<cv::Mat>(source);
-        m_owner = std::shared_ptr<void>(keeper, keeper->data);
+        if (source.u == nullptr) {
+            auto copy = source.clone();
+            auto keeper = std::make_shared<cv::Mat>(std::move(copy));
+            m_owner = std::shared_ptr<void>(keeper, keeper->data);
+        } else {
+            auto keeper = std::make_shared<cv::Mat>(source);
+            m_owner = std::shared_ptr<void>(keeper, keeper->data);
+        }
+
         m_data = static_cast<byte*>(m_owner.get());
         m_stride = static_cast<std::size_t>(source.step);
         m_type = source.type();
